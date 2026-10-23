@@ -42,26 +42,86 @@ CLAUDE_MANAGED_ENVIRONMENT_ID=your_environment_id
 PORT=3060
 ```
 
-## How the application was developed
+## How the app was build
 
-The browser collects inputs; the Node host validates requests; the lesson implementation produces observable evidence. The architecture page walks through the real source with numbered steps, prerequisite configuration, source filenames and code excerpts.
+### 1. Read actual artifact bytes and coverage status
 
-### Lesson implementation
+The host separately hashes the supplied artifact and the artifact claimed by the report. allChecksComplete distinguishes missing coverage from a completed but rejected submission.
 
-[src/lesson.ts](https://github.com/luiscoco/Udemy-claude-managed-agents-lesson-c60-app/blob/main/src/lesson.ts)
+Source: [src/lesson.ts](src/lesson.ts#L13)
 
 ```typescript
-  async run(input) {
-
-const actualHash=hash(text(input,"artifact")),claimedHash=hash(text(input,"claimedArtifact")),complete=flag(input,"allChecksComplete");
-const accepted=complete&&actualHash===claimedHash&&number(input,"testExit")===0&&number(input,"buildExit")===0&&flag(input,"reviewApproved");
-return report(!complete?"incomplete":accepted?"passed":"rejected",accepted?"Evidence accepted for the next authorized host gate":"Capstone acceptance requirements are not satisfied",{accepted,taskId:"capstone-demo",revision:"reviewed-head",actualHash,claimedHash,checks:{tests:number(input,"testExit"),build:number(input,"buildExit"),review:flag(input,"reviewApproved"),complete},merged:false,deployed:false},["Freeze task and revision bindings","Read actual artifact bytes","Bind independent tests and build to the same bytes","Require review and full check coverage","Keep merge and deployment as separate authorized operations"]);
-
-  }
-};
+const actualHash = hash(text(input, "artifact")),
+  claimedHash = hash(text(input, "claimedArtifact")),
+  complete = flag(input, "allChecksComplete");
 ```
 
-Read the architecture page for the remaining source excerpts and explanations, including input handling and optional provider behavior. The diagram describes this application, rather than implying that an external integration has been implemented.
+### 2. Accept only matching evidence with all gates satisfied
+
+Acceptance requires matching hashes, complete coverage, zero test/build exits and review approval. The report retains task and revision labels and keeps merged/deployed false; it evaluates a capstone evidence contract without running workers, CI or publication.
+
+Source: [src/lesson.ts](src/lesson.ts#L14) · selected statements
+
+```typescript
+const accepted =
+  complete &&
+  actualHash === claimedHash &&
+  number(input, "testExit") === 0 &&
+  number(input, "buildExit") === 0 &&
+  flag(input, "reviewApproved");
+
+return report(
+  !complete ? "incomplete" : accepted ? "passed" : "rejected",
+  accepted
+    ? "Evidence accepted for the next authorized host gate"
+    : "Capstone acceptance requirements are not satisfied",
+  {
+    accepted,
+    taskId: "capstone-demo",
+    revision: "reviewed-head",
+    actualHash,
+    claimedHash,
+    checks: {
+      tests: number(input, "testExit"),
+      build: number(input, "buildExit"),
+      review: flag(input, "reviewApproved"),
+      complete,
+    },
+    merged: false,
+    deployed: false,
+  },
+  [
+    "Freeze task and revision bindings",
+    "Read actual artifact bytes",
+    "Bind independent tests and build to the same bytes",
+    "Require review and full check coverage",
+    "Keep merge and deployment as separate authorized operations",
+  ],
+);
+```
+
+### Check your understanding
+
+Run **Accept complete matching evidence** in the application. Compare the result with these scenario expectations:
+
+```json
+{
+  "input": {
+    "artifact": "candidate-v1",
+    "claimedArtifact": "candidate-v1",
+    "testExit": 0,
+    "buildExit": 0,
+    "reviewApproved": true,
+    "allChecksComplete": true
+  },
+  "expectedOutcome": "passed",
+  "checkEvidence": {
+    "accepted": true
+  }
+}
+```
+
+Then try **Reject an artifact mismatch**. Its expected outcome is `rejected`; identify the condition or evidence field that explains the difference.
 
 ## Validation
 
