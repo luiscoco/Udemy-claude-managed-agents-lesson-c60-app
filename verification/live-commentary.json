@@ -1,0 +1,29 @@
+{
+  "source": "live-provider-commentary",
+  "sessionId": "sesn_01RpfgdQjdtdM71c67arcNpT",
+  "answer": "This is a local teaching experiment illustrating a capstone lesson about transitioning from a single app to an engineering team workflow. It describes a hypothetical evidence-acceptance process with steps like freezing task/revision bindings, reading artifact bytes, and requiring review before merge or deployment. The \"passed\" outcome and hash values are local demonstration data, not the result of any executed tool or verified remote operation.",
+  "stopReason": "end_turn",
+  "eventTypes": [
+    "session.status_running",
+    "session.thread_status_running",
+    "user.message",
+    "span.model_request_start",
+    "agent.thinking",
+    "agent.message",
+    "span.model_request_end",
+    "session.thread_status_idle",
+    "session.usage",
+    "session.status_idle"
+  ],
+  "requestUsage": [
+    {
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "input_tokens": 703,
+      "output_tokens": 116,
+      "speed": "standard"
+    }
+  ],
+  "experimentHash": "f5e6d111f01726e58db193772e02aaaebd9ef2b6b4538f63ef611c19fadcda0a",
+  "scope": "A real text-only model response about the local experiment. External integrations and the experiment's correctness are not certified by this response."
+}

@@ -1,0 +1,103 @@
+// Capstone teaching helpers. Importing this module starts no work.
+import { createHash } from "node:crypto";
+import { z } from "zod";
+import type Anthropic from "@anthropic-ai/sdk";
+import type { AgentCreateParams } from "@anthropic-ai/sdk/resources/beta/agents/agents";
+import type { BetaManagedAgentsSessionEvent as Event } from "@anthropic-ai/sdk/resources/beta/sessions/events";
+const Pin = z.strictObject({ id: z.string().min(1), version: z.number().int().positive() });
+const Pins = z.array(Pin).length(3);
+export function teamPolicy(reviewedWorkers: unknown): NonNullable<AgentCreateParams["multiagent"]> {
+  const workers = Pins.parse(reviewedWorkers);
+  if (new Set(workers.map(w => w.id)).size !== 3) throw new Error("Three distinct workers required");
+  return { type: "multiagent_20261001", subagents: { type: "enabled",
+    inline_agents: { type: "disabled" },
+    predefined_agents: workers.map(w => ({ type: "agent", ...w })) },
+    workflows: { type: "disabled" }, advisor: { type: "disabled" } };
+}
+const Binding = z.strictObject({ tenantId: z.string().min(1), taskId: z.string().min(1),
+  head: z.string().regex(/^[a-f0-9]{40}$/), environmentId: z.string().min(1), coordinator: Pin });
+export type Task = z.infer<typeof Binding>;
+export type Run = { task: Task; sessionId?: string;
+  phase: "ready" | "creating" | "created" | "dispatched" | "uncertain" };
+// Input is a server-owned, authorized task record, never raw browser/model JSON.
+export function newRun(authorizedHostRecord: unknown): Run {
+  return { task: Binding.parse(authorizedHostRecord), phase: "ready" };
+}
+export async function dispatch(client: Anthropic, run: Run, request: string) {
+  if (run.phase !== "ready") throw new Error("Run already claimed");
+  if (!request.trim() || request.length > 8000) throw new Error("Invalid request");
+  run.phase = "creating";
+  let abortLocal: (() => void) | undefined;
+  try {
+    const session = await client.beta.sessions.create({
+      agent: { type: "agent", ...run.task.coordinator },
+      environment_id: run.task.environmentId,
+      budget: { type: "limit", max_list_cost: { amount: "500", currency: "USD" } },
+      metadata: { task_id: run.task.taskId }
+    }, { maxRetries: 0, timeout: 10000 });
+    run.sessionId = session.id; run.phase = "created";
+    // Persist session ID durably before further I/O in a real service.
+    const stream = await client.beta.sessions.events.stream(session.id, {}, { timeout: 60000 });
+    abortLocal = () => stream.controller.abort();
+    await client.beta.sessions.events.send(session.id, { events: [{ type: "user.message",
+      content: [{ type: "text", text: JSON.stringify({ taskId: run.task.taskId,
+        head: run.task.head, featureRequest: request }) }] }] }, { maxRetries: 0, timeout: 10000 });
+    run.phase = "dispatched";
+    return stream;
+  } catch (error) {
+    abortLocal?.(); run.phase = "uncertain"; throw error;
+  }
+}
+const Evidence = z.strictObject({ tenantId: z.string().min(1), taskId: z.string().min(1),
+  head: z.string().regex(/^[a-f0-9]{40}$/), runId: z.string().min(1),
+  artifactSha256: z.string().regex(/^[a-f0-9]{64}$/) });
+export type Proof = { tenantId: string; taskId: string; head: string; runId: string;
+  testExit: number; buildExit: number; review: "approved" | "rejected";
+  requiredChecksComplete: boolean; artifact: Uint8Array };
+// Proof must come from an authenticated runner and review service with an immutable
+// artifact snapshot. A worker's own assertions do not constitute trusted proof.
+export function validateEvidence(raw: unknown, task: Task, proof: Proof): boolean {
+  const parsed = Evidence.safeParse(raw);
+  if (!parsed.success) return false;
+  const e = parsed.data;
+  return e.tenantId === task.tenantId && e.taskId === task.taskId && e.head === task.head &&
+    proof.tenantId === task.tenantId && proof.taskId === task.taskId && proof.head === task.head &&
+    e.runId === proof.runId && proof.testExit === 0 && proof.buildExit === 0 &&
+    proof.review === "approved" && proof.requiredChecksComplete === true &&
+    e.artifactSha256 === createHash("sha256").update(proof.artifact).digest("hex");
+}
+export type Receipt = { state: "sending" | "acknowledged" | "uncertain"; accepted: boolean };
+// Illustration: one serialized consumer and an in-memory journal. Production needs
+// a durable per-call claim and receipt reconciliation, not a claim of exactly-once delivery.
+export async function handleEvidence(client: Anthropic, sessionId: string, event: Event,
+  task: Task, loadTrustedProof: () => Promise<Proof>, journal: Map<string, Receipt>) {
+  if (event.type !== "agent.custom_tool_use" || event.name !== "submit_pr_evidence") return null;
+  const key = JSON.stringify([sessionId, event.id]);
+  if (journal.has(key)) return journal.get(key)!;
+  const accepted = validateEvidence(event.input, task, await loadTrustedProof());
+  const receipt: Receipt = { state: "sending", accepted }; journal.set(key, receipt);
+  try {
+    await client.beta.sessions.events.send(sessionId, { events: [{ type: "user.custom_tool_result",
+      custom_tool_use_id: event.id, is_error: !accepted,
+      content: [{ type: "text", text: accepted
+        ? "Evidence accepted for the next host gate. No merge or deployment performed."
+        : "Evidence rejected. Repair and resubmit for this task and revision." }] }] },
+      { maxRetries: 0, timeout: 10000 });
+    receipt.state = "acknowledged";
+  } catch (error) { receipt.state = "uncertain"; throw error; }
+  return receipt;
+}
+export function observeOutcome(event: Event) {
+  if (event.type !== "session.status_idle") return null;
+  const reason = event.stop_reason.type;
+  if (reason === "requires_action") return "waiting_for_action";
+  if (reason === "budget_reached") return "paused_for_budget";
+  if (reason === "end_turn") return "turn_ended_verify_task";
+  return "stopped_inspect_reason";
+}
+// Integration contract: authenticate/authorize tenant and task before dispatch;
+// pre-provision environment and reviewed coordinator with teamPolicy + strict tool schema;
+// serialize canonical event handling; handle calls while running (including child calls);
+// re-read the current task/head at validation and atomically recheck before any merge;
+// reconcile journal on restart; expose only an authorized narrow SSE projection.
+// This module performs no repository merge, deployment, React UI or Express installation.
